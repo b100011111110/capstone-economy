@@ -1,0 +1,55 @@
+from dataclasses import dataclass, asdict
+import json
+from pathlib import Path
+from typing import Any, Dict, List
+
+
+@dataclass
+class Config:
+    scenario_name: str = "uniform/simple_wood_and_stone"
+    components: List[str] = None
+    world_size: List[int] = None
+    n_agents: int = 50
+    n_worlds: int = 4
+    episode_length: int = 300
+    planner_interval: int = 30
+    rollout_steps: int = 120
+    updates: int = 1000
+    learning_rate: float = 3e-4
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    clip_epsilon: float = 0.2
+    value_coefficient: float = 0.5
+    entropy_coefficient: float = 0.01
+    ppo_epochs: int = 4
+    minibatch_size: int = 256
+    hidden_size: int = 128
+    seed: int = 7
+    device: str = "auto"
+    output_dir: str = "outputs"
+
+    def __post_init__(self):
+        if self.components is None:
+            self.components = ["Gather", "Build"]
+        if self.world_size is None:
+            self.world_size = [25, 25]
+        if self.world_size != [25, 25]:
+            raise ValueError("world_size must be [25, 25]")
+        if self.n_agents != 50 or self.n_worlds != 4:
+            raise ValueError("this configuration requires 50 agents and 4 worlds")
+        if self.planner_interval <= 0:
+            raise ValueError("planner_interval must be positive")
+
+    @classmethod
+    def from_file(cls, path: str) -> "Config":
+        with open(path, "r") as handle:
+            return cls(**json.load(handle))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    def save(self, path: str) -> None:
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("w") as handle:
+            json.dump(self.to_dict(), handle, indent=2)

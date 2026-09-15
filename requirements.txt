@@ -1,0 +1,5 @@
+ai-economist
+numpy<2
+pandas
+matplotlib
+torch==1.13.1
