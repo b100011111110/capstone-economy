@@ -253,10 +253,13 @@ def generate_training_plots(data_dir: Path, output_dir: Path):
         # 4.1 Average Voter Loyalty trajectories per Leader
         ax = axes[0, 0]
         if not loyalty_df.empty:
-            l_step = loyalty_df.groupby("global_step").mean(numeric_only=True).reset_index()
-            ax.plot(l_step["global_step"], l_step["leader_0_loyalty"], label="Leader 0 (Candidate A)", color="#1f77b4", linewidth=2)
-            ax.plot(l_step["global_step"], l_step["leader_1_loyalty"], label="Leader 1 (Candidate B)", color="#ff7f0e", linewidth=2)
-            ax.plot(l_step["global_step"], l_step["leader_2_loyalty"], label="Leader 2 (Candidate C)", color="#2ca02c", linewidth=2)
+            l_step = loyalty_df.iloc[::max(1, len(loyalty_df) // 5000)].copy()
+            l_step["l0_roll"] = l_step["leader_0_loyalty"].rolling(50, min_periods=1).mean()
+            l_step["l1_roll"] = l_step["leader_1_loyalty"].rolling(50, min_periods=1).mean()
+            l_step["l2_roll"] = l_step["leader_2_loyalty"].rolling(50, min_periods=1).mean()
+            ax.plot(l_step["global_step"], l_step["l0_roll"], label="Leader 0 (Candidate A)", color="#1f77b4", linewidth=2)
+            ax.plot(l_step["global_step"], l_step["l1_roll"], label="Leader 1 (Candidate B)", color="#ff7f0e", linewidth=2)
+            ax.plot(l_step["global_step"], l_step["l2_roll"], label="Leader 2 (Candidate C)", color="#2ca02c", linewidth=2)
             ax.axhline(0.0, color="gray", linestyle="--", alpha=0.7, label="Indifference (0.0)")
             ax.set_title("Voter Loyalty Evolution (Approval [-1, +1])", fontweight="bold")
             ax.set_xlabel("Global Step")
@@ -272,14 +275,17 @@ def generate_training_plots(data_dir: Path, output_dir: Path):
                 shares = [json.loads(s) for s in elections_df["vote_shares"]]
                 shares_df = pd.DataFrame(shares, columns=["Candidate 0", "Candidate 1", "Candidate 2"])
                 shares_df["global_step"] = elections_df["global_step"]
+                shares_df = shares_df.sort_values("global_step").reset_index(drop=True)
+                for col in ["Candidate 0", "Candidate 1", "Candidate 2"]:
+                    shares_df[f"{col}_roll"] = shares_df[col].rolling(30, min_periods=1).mean()
                 
-                ax.plot(shares_df["global_step"], shares_df["Candidate 0"], marker="o", label="Leader 0 Vote Share", color="#1f77b4")
-                ax.plot(shares_df["global_step"], shares_df["Candidate 1"], marker="s", label="Leader 1 Vote Share", color="#ff7f0e")
-                ax.plot(shares_df["global_step"], shares_df["Candidate 2"], marker="^", label="Leader 2 Vote Share", color="#2ca02c")
+                ax.plot(shares_df["global_step"], shares_df["Candidate 0_roll"], label="Leader 0 (Broad Coalition)", color="#1f77b4", linewidth=2)
+                ax.plot(shares_df["global_step"], shares_df["Candidate 1_roll"], label="Leader 1 (Fiscal Conservative)", color="#ff7f0e", linewidth=2)
+                ax.plot(shares_df["global_step"], shares_df["Candidate 2_roll"], label="Leader 2 (Progressive Welfare)", color="#2ca02c", linewidth=2)
                 ax.axhline(0.333, color="gray", linestyle=":", alpha=0.7, label="Equal Split (33%)")
                 ax.set_title("Democratic Election Vote Shares (%)", fontweight="bold")
                 ax.set_xlabel("Global Step")
-                ax.set_ylabel("Vote Share")
+                ax.set_ylabel("Vote Share (Rolling Mean)")
                 ax.set_ylim(-0.05, 1.05)
                 ax.legend(loc="best")
                 ax.grid(True, alpha=0.3)
@@ -294,7 +300,8 @@ def generate_training_plots(data_dir: Path, output_dir: Path):
                 if c_props:
                     c_df = pd.DataFrame(c_props, columns=["Cluster 0", "Cluster 1", "Cluster 2"])
                     c_df["global_step"] = loyalty_df["global_step"].iloc[:len(c_df)]
-                    c_grouped = c_df.groupby("global_step").mean().reset_index()
+                    c_sub = c_df.iloc[::max(1, len(c_df) // 1000)].copy()
+                    c_grouped = c_sub.groupby("global_step").mean().reset_index()
                     ax.stackplot(
                         c_grouped["global_step"],
                         c_grouped["Cluster 0"],
