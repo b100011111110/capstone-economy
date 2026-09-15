@@ -22,3 +22,4 @@
   "output_dir": "outputs/500k",
   "checkpoint_path": "outputs/100k/checkpoints/update_000990.pt"
 }
+

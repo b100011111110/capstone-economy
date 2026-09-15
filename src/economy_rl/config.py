@@ -15,7 +15,7 @@ class Config:
     planner_interval: int = 30
     rollout_steps: int = 120
     updates: int = 1000
-    learning_rate: float = 3e-4
+    learning_rate: float = 0.005
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_epsilon: float = 0.2
@@ -27,6 +27,7 @@ class Config:
     seed: int = 7
     device: str = "auto"
     output_dir: str = "outputs"
+    checkpoint_path: str = None
 
     def __post_init__(self):
         if self.components is None:
@@ -35,8 +36,8 @@ class Config:
             self.world_size = [25, 25]
         if self.world_size != [25, 25]:
             raise ValueError("world_size must be [25, 25]")
-        if self.n_agents != 50 or self.n_worlds != 4:
-            raise ValueError("this configuration requires 50 agents and 4 worlds")
+        if self.n_agents <= 0 or self.n_worlds <= 0:
+            raise ValueError("n_agents and n_worlds must be positive")
         if self.planner_interval <= 0:
             raise ValueError("planner_interval must be positive")
 

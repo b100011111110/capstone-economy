@@ -56,6 +56,21 @@ class Trainer:
         self.episode_planner_rewards = [0.0] * config.n_worlds
         self.episode_worker_rewards = [0.0] * config.n_worlds
         self.episode_lengths = [0] * config.n_worlds
+        if self.config.checkpoint_path:
+            self.load_checkpoint(self.config.checkpoint_path)
+
+    def load_checkpoint(self, checkpoint_path: str) -> None:
+        path = Path(checkpoint_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Checkpoint not found at: {checkpoint_path}")
+        checkpoint = torch.load(path, map_location=self.device)
+        if "planner" in checkpoint:
+            self.planner.load_state_dict(checkpoint["planner"])
+        if "worker" in checkpoint:
+            self.worker.load_state_dict(checkpoint["worker"])
+        self.planner_optimizer = torch.optim.Adam(self.planner.parameters(), lr=self.config.learning_rate)
+        self.worker_optimizer = torch.optim.Adam(self.worker.parameters(), lr=self.config.learning_rate)
+        print(f"Loaded checkpoint weights from {checkpoint_path} with lr={self.config.learning_rate}", flush=True)
 
     def _planner_input(self, world_id: int) -> torch.Tensor:
         vector = self._raw_planner_vector(world_id)

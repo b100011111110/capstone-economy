@@ -1,0 +1,4 @@
+docker exec capstone-economy-cuda bash -c "
+source ~/.env/bin/activate
+python -m economy_rl.training.train --config configs/scenario_500k_8w.json
+"
