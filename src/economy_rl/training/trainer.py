@@ -220,12 +220,14 @@ class Trainer:
                         "done": done,
                         "planner_action": json.dumps([int(value) for value in pending["action"]]),
                     })
+                    """
                     print(
                         "planner_cycle "
                         "world=%d episode=%d timestep=%d policy=%s duration=%d reward=%.4f"
                         % (world_id, episode_id, timestep, list(pending["action"]), pending["duration"], pending["reward"]),
                         flush=True,
                     )
+                    """
                     self.pending_planner[world_id] = None
                 if done:
                     self.dump.episode({
