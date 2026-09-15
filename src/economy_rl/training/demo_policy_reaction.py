@@ -13,9 +13,9 @@ from economy_rl.models.actor_critic import ActorCritic
 
 
 POLICIES = {
-    0: "no_tax",
-    1: "tax_20_percent",
-    2: "tax_40_percent",
+    0: "tax_20_percent",
+    1: "tax_50_percent",
+    2: "tax_80_percent",
 }
 
 
@@ -55,7 +55,7 @@ def run_demo(output_path: str, checkpoint: str = "") -> None:
             records.append({
                 "policy_index": policy_index,
                 "policy_name": POLICIES[policy_index],
-                "tax_rate": [0.0, 0.2, 0.4][policy_index],
+                "tax_rate": [0.20, 0.50, 0.80][policy_index],
                 "worker_mean_reward": float(worker_rewards.mean()),
                 "worker_total_reward": float(worker_rewards.sum()),
                 "worker_reward_std": float(worker_rewards.std()),

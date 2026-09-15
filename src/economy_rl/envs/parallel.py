@@ -96,7 +96,7 @@ class ParallelWorlds:
 
     def policy_features(self, world_id: int) -> np.ndarray:
         policy_index = self.worlds[world_id].policy_index
-        tax_rate = (0.0, 0.20, 0.40)[policy_index]
+        tax_rate = (0.20, 0.50, 0.80)[policy_index]
         return np.asarray([policy_index / 2.0, tax_rate], dtype=np.float32)
 
     def close(self) -> None:
