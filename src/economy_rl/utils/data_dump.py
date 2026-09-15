@@ -55,6 +55,20 @@ class DataDump:
             record,
         )
 
+    def election(self, record: Dict[str, Any]) -> None:
+        self._write(
+            "elections.csv",
+            ("global_step", "world", "episode", "timestep", "incumbent_id", "winner_id", "incumbent_reelected", "margin_of_victory", "vote_counts", "vote_shares", "cluster_vote_shares"),
+            record,
+        )
+
+    def loyalty(self, record: Dict[str, Any]) -> None:
+        self._write(
+            "loyalty.csv",
+            ("global_step", "world", "episode", "timestep", "incumbent_id", "leader_0_loyalty", "leader_1_loyalty", "leader_2_loyalty", "cluster_proportions"),
+            record,
+        )
+
     def write_summary(self, summary: Dict[str, Any]) -> None:
         with (self.directory / "summary.json").open("w") as handle:
             json.dump(summary, handle, indent=2, default=float)

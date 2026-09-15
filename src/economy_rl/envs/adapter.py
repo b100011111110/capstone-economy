@@ -71,8 +71,14 @@ def compute_planner_macro_features(
     policy_features: np.ndarray,
     timestep: int,
     episode_length: int = 300,
+    cluster_proportions: Sequence[float] = None,
+    cluster_loyalty_matrix: np.ndarray = None,
+    mean_leader_loyalty: Sequence[float] = None,
+    current_leader_id: int = 0,
+    n_leaders: int = 3,
+    n_clusters: int = 3,
 ) -> np.ndarray:
-    """Extract 4 Gaussian parametric curves + Gini + Macro World State to prevent overfitting."""
+    """Extract 4 Gaussian parametric curves + Gini + Dynamic Clustering + Voter Loyalty."""
     worker_agents = [a for a in environment.all_agents if not a.multi_action_mode]
     coins = np.array([float(a.inventory.get("Coin", 0.0)) for a in worker_agents], dtype=np.float32)
     wood = np.array([float(a.inventory.get("Wood", 0.0)) for a in worker_agents], dtype=np.float32)
@@ -105,9 +111,35 @@ def compute_planner_macro_features(
     mean_labor = float(np.mean(labor)) / 100.0
     progress = float(timestep) / float(max(episode_length, 1))
 
+    # Political Economy Features:
+    # 1. Cluster population shares
+    if cluster_proportions is None:
+        cluster_props = [1.0 / n_clusters] * n_clusters
+    else:
+        cluster_props = list(cluster_proportions)
+
+    # 2. Cluster loyalty matrix (n_clusters x n_leaders)
+    if cluster_loyalty_matrix is None:
+        cluster_loyalties = [0.0] * (n_clusters * n_leaders)
+    else:
+        cluster_loyalties = cluster_loyalty_matrix.flatten().tolist()
+
+    # 3. Overall leader approval ratings (n_leaders)
+    if mean_leader_loyalty is None:
+        leader_approvals = [0.0] * n_leaders
+    else:
+        leader_approvals = list(mean_leader_loyalty)
+
+    # 4. Incumbent one-hot indicator
+    incumbent_one_hot = [1.0 if i == current_leader_id else 0.0 for i in range(n_leaders)]
+
     macro_features = (
         gaussian_features
         + [gini, poverty_rate, mean_coins, mean_wood, mean_stone, mean_labor, progress]
         + list(policy_features)
+        + cluster_props
+        + cluster_loyalties
+        + leader_approvals
+        + incumbent_one_hot
     )
     return np.asarray(macro_features, dtype=np.float32)

@@ -238,6 +238,97 @@ def generate_training_plots(data_dir: Path, output_dir: Path):
         plt.close(fig)
         print(f"Saved: {ppo_path}")
 
+    # ==========================================
+    # 4. Democratic Political Economy & Loyalty Dashboard
+    # ==========================================
+    loyalty_path = data_dir / "loyalty.csv"
+    elections_path = data_dir / "elections.csv"
+    if loyalty_path.exists() or elections_path.exists():
+        loyalty_df = pd.read_csv(loyalty_path) if loyalty_path.exists() else pd.DataFrame()
+        elections_df = pd.read_csv(elections_path) if elections_path.exists() else pd.DataFrame()
+
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        fig.suptitle("Democratic Political Economy & Dynamic Voter Loyalty [-1.0, +1.0]", fontsize=16, fontweight="bold")
+
+        # 4.1 Average Voter Loyalty trajectories per Leader
+        ax = axes[0, 0]
+        if not loyalty_df.empty:
+            l_step = loyalty_df.groupby("global_step").mean(numeric_only=True).reset_index()
+            ax.plot(l_step["global_step"], l_step["leader_0_loyalty"], label="Leader 0 (Candidate A)", color="#1f77b4", linewidth=2)
+            ax.plot(l_step["global_step"], l_step["leader_1_loyalty"], label="Leader 1 (Candidate B)", color="#ff7f0e", linewidth=2)
+            ax.plot(l_step["global_step"], l_step["leader_2_loyalty"], label="Leader 2 (Candidate C)", color="#2ca02c", linewidth=2)
+            ax.axhline(0.0, color="gray", linestyle="--", alpha=0.7, label="Indifference (0.0)")
+            ax.set_title("Voter Loyalty Evolution (Approval [-1, +1])", fontweight="bold")
+            ax.set_xlabel("Global Step")
+            ax.set_ylabel("Mean Voter Loyalty")
+            ax.set_ylim(-1.05, 1.05)
+            ax.legend(loc="best")
+            ax.grid(True, alpha=0.3)
+
+        # 4.2 Election Vote Shares over Time
+        ax = axes[0, 1]
+        if not elections_df.empty and "vote_shares" in elections_df.columns:
+            try:
+                shares = [json.loads(s) for s in elections_df["vote_shares"]]
+                shares_df = pd.DataFrame(shares, columns=["Candidate 0", "Candidate 1", "Candidate 2"])
+                shares_df["global_step"] = elections_df["global_step"]
+                
+                ax.plot(shares_df["global_step"], shares_df["Candidate 0"], marker="o", label="Leader 0 Vote Share", color="#1f77b4")
+                ax.plot(shares_df["global_step"], shares_df["Candidate 1"], marker="s", label="Leader 1 Vote Share", color="#ff7f0e")
+                ax.plot(shares_df["global_step"], shares_df["Candidate 2"], marker="^", label="Leader 2 Vote Share", color="#2ca02c")
+                ax.axhline(0.333, color="gray", linestyle=":", alpha=0.7, label="Equal Split (33%)")
+                ax.set_title("Democratic Election Vote Shares (%)", fontweight="bold")
+                ax.set_xlabel("Global Step")
+                ax.set_ylabel("Vote Share")
+                ax.set_ylim(-0.05, 1.05)
+                ax.legend(loc="best")
+                ax.grid(True, alpha=0.3)
+            except Exception as e:
+                print(f"Could not parse vote shares: {e}")
+
+        # 4.3 Dynamic Demographic Cluster Shares
+        ax = axes[1, 0]
+        if not loyalty_df.empty and "cluster_proportions" in loyalty_df.columns:
+            try:
+                c_props = [json.loads(p) for p in loyalty_df["cluster_proportions"] if p]
+                if c_props:
+                    c_df = pd.DataFrame(c_props, columns=["Cluster 0", "Cluster 1", "Cluster 2"])
+                    c_df["global_step"] = loyalty_df["global_step"].iloc[:len(c_df)]
+                    c_grouped = c_df.groupby("global_step").mean().reset_index()
+                    ax.stackplot(
+                        c_grouped["global_step"],
+                        c_grouped["Cluster 0"],
+                        c_grouped["Cluster 1"],
+                        c_grouped["Cluster 2"],
+                        labels=["Dynamic Cluster 0", "Dynamic Cluster 1", "Dynamic Cluster 2"],
+                        colors=["#aec7e8", "#ffbb78", "#98df8a"],
+                        alpha=0.8,
+                    )
+                    ax.set_title("Dynamic N-Dimensional Agent Clustering Evolution", fontweight="bold")
+                    ax.set_xlabel("Global Step")
+                    ax.set_ylabel("Population Share")
+                    ax.set_ylim(0, 1.0)
+                    ax.legend(loc="upper right")
+                    ax.grid(True, alpha=0.3)
+            except Exception as e:
+                print(f"Could not parse cluster proportions: {e}")
+
+        # 4.4 Election Winners & Turnover
+        ax = axes[1, 1]
+        if not elections_df.empty and "winner_id" in elections_df.columns:
+            winner_counts = elections_df["winner_id"].value_counts()
+            colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
+            ax.bar([f"Leader {i}" for i in range(3)], [winner_counts.get(i, 0) for i in range(3)], color=colors, alpha=0.85)
+            ax.set_title(f"Total Election Wins (Total Elections: {len(elections_df)})", fontweight="bold")
+            ax.set_ylabel("Elections Won")
+            ax.grid(True, alpha=0.3, axis="y")
+
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+        pol_path = output_dir / "political_economy_dashboard.png"
+        fig.savefig(pol_path, dpi=200)
+        plt.close(fig)
+        print(f"Saved: {pol_path}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Generate comprehensive training plots")

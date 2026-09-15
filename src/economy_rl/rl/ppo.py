@@ -21,7 +21,8 @@ def update_policy(
     minibatch_size: int,
     device: torch.device,
 ) -> Dict[str, float]:
-    if not buffer.transitions:
+    if len(buffer) < 2:
+        buffer.clear()
         return {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
     arrays = buffer.as_arrays()
     returns, advantages = buffer.compute_returns_and_advantages(gamma, gae_lambda)
@@ -30,7 +31,11 @@ def update_policy(
     old_log_probabilities = torch.as_tensor(arrays["log_probabilities"], device=device)
     returns_tensor = torch.as_tensor(returns, device=device)
     advantages_tensor = torch.as_tensor(advantages, device=device)
-    advantages_tensor = (advantages_tensor - advantages_tensor.mean()) / (advantages_tensor.std() + 1e-8)
+    adv_std = advantages_tensor.std(unbiased=False)
+    if torch.isnan(adv_std) or adv_std < 1e-8:
+        advantages_tensor = torch.zeros_like(advantages_tensor)
+    else:
+        advantages_tensor = (advantages_tensor - advantages_tensor.mean()) / (adv_std + 1e-8)
 
     metrics = {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
     count = 0

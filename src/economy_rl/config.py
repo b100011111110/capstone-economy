@@ -32,6 +32,16 @@ class Config:
     device: str = "auto"
     output_dir: str = "outputs"
     checkpoint_path: str = None
+    # Political Economy & Dynamic Clustering Parameters
+    n_leaders: int = 3
+    election_interval: int = 100
+    n_clusters: int = 3
+    loyalty_eta: float = 0.15
+    loyalty_decay: float = 0.02
+    loyalty_sensitivity: float = 1.0
+    voting_temperature: float = 0.5
+    approval_reward_coeff: float = 0.5
+    vote_reward_coeff: float = 0.5
 
     def __post_init__(self):
         if self.components is None:
