@@ -58,7 +58,7 @@ class ParallelWorlds:
     def _apply_economic_policy(self, world_id: int, raw_rewards: Dict[str, Any]) -> Dict[str, Any]:
         """Apply tax and equal redistribution outside Foundation's fixed planner action space."""
         world = self.worlds[world_id]
-        tax_rate = (0.0, 0.20, 0.40)[world.policy_index]
+        tax_rate = (0.20, 0.50, 0.80)[world.policy_index]
         worker_incomes = {
             agent_id: max(0.0, float(raw_rewards.get(agent_id, 0.0)))
             for agent_id in self.worker_ids
