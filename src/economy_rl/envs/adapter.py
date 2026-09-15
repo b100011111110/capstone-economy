@@ -64,3 +64,50 @@ def encode_actions(
     actions: Dict[str, Any] = {planner_id: [0]}
     actions.update({agent_id: int(action) for agent_id, action in zip(worker_ids, worker_actions)})
     return actions
+
+
+def compute_planner_macro_features(
+    environment: Any,
+    policy_features: np.ndarray,
+    timestep: int,
+    episode_length: int = 300,
+) -> np.ndarray:
+    """Extract 4 Gaussian parametric curves + Gini + Macro World State to prevent overfitting."""
+    worker_agents = [a for a in environment.all_agents if not a.multi_action_mode]
+    coins = np.array([float(a.inventory.get("Coin", 0.0)) for a in worker_agents], dtype=np.float32)
+    wood = np.array([float(a.inventory.get("Wood", 0.0)) for a in worker_agents], dtype=np.float32)
+    stone = np.array([float(a.inventory.get("Stone", 0.0)) for a in worker_agents], dtype=np.float32)
+    labor = np.array([float(a.state.get("endogenous", {}).get("Labor", 0.0)) for a in worker_agents], dtype=np.float32)
+
+    total_wealth = coins + 2.0 * wood + 2.0 * stone
+    sorted_wealth = np.sort(total_wealth)
+
+    # 4 Gaussian Curves (Quartile distribution: Poorest, Lower-Middle, Upper-Middle, Top 25%)
+    n = len(sorted_wealth)
+    q_chunks = np.array_split(sorted_wealth, 4)
+    gaussian_features: List[float] = []
+    for q in q_chunks:
+        pi_k = float(len(q)) / float(max(n, 1))
+        mu_k = float(np.mean(q)) / 50.0
+        sigma_k = float(np.std(q)) / 20.0
+        gaussian_features.extend([pi_k, mu_k, sigma_k])
+
+    # Gini Coefficient & Poverty Rate
+    diff_sum = float(np.abs(np.subtract.outer(total_wealth, total_wealth)).sum())
+    denom = float(2.0 * n * total_wealth.sum() + 1e-8)
+    gini = float(diff_sum / denom)
+    poverty_rate = float(np.mean(total_wealth == 0))
+
+    # Macroeconomic Aggregates & Progress
+    mean_coins = float(np.mean(coins)) / 50.0
+    mean_wood = float(np.mean(wood)) / 20.0
+    mean_stone = float(np.mean(stone)) / 20.0
+    mean_labor = float(np.mean(labor)) / 100.0
+    progress = float(timestep) / float(max(episode_length, 1))
+
+    macro_features = (
+        gaussian_features
+        + [gini, poverty_rate, mean_coins, mean_wood, mean_stone, mean_labor, progress]
+        + list(policy_features)
+    )
+    return np.asarray(macro_features, dtype=np.float32)

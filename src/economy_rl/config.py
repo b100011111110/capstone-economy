@@ -16,11 +16,15 @@ class Config:
     rollout_steps: int = 120
     updates: int = 1000
     learning_rate: float = 0.005
+    planner_learning_rate: float = 0.0005
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_epsilon: float = 0.2
     value_coefficient: float = 0.5
     entropy_coefficient: float = 0.01
+    worker_entropy_coefficient: float = 0.05
+    planner_entropy_coefficient: float = 0.01
+    normalize_rewards: bool = True
     ppo_epochs: int = 4
     minibatch_size: int = 256
     hidden_size: int = 128
@@ -40,6 +44,8 @@ class Config:
             raise ValueError("n_agents and n_worlds must be positive")
         if self.planner_interval <= 0:
             raise ValueError("planner_interval must be positive")
+        if self.planner_learning_rate is None:
+            self.planner_learning_rate = self.learning_rate / 10.0
 
     @classmethod
     def from_file(cls, path: str) -> "Config":

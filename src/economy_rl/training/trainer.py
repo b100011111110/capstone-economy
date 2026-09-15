@@ -6,13 +6,31 @@ import numpy as np
 import torch
 
 from economy_rl.config import Config
-from economy_rl.envs.adapter import agent_observation, encode_actions
+from economy_rl.envs.adapter import agent_observation, compute_planner_macro_features, encode_actions
 from economy_rl.envs.parallel import ParallelWorlds
 from economy_rl.models.actor_critic import ActorCritic
 from economy_rl.rl.ppo import update_policy
 from economy_rl.rl.rollout import RolloutBuffer
 from economy_rl.utils.data_dump import DataDump
 from economy_rl.utils.history import HistoryWriter
+
+
+class RunningRewardNormalizer:
+    def __init__(self, clip: float = 10.0):
+        self.count = 1e-4
+        self.mean = 0.0
+        self.var = 1.0
+        self.clip = clip
+
+    def normalize(self, reward: float) -> float:
+        self.count += 1
+        delta = reward - self.mean
+        self.mean += delta / self.count
+        delta2 = reward - self.mean
+        self.var += delta * delta2
+        std = max(float(np.sqrt(self.var / self.count)), 1e-4)
+        scaled = (reward - self.mean) / std
+        return float(np.clip(scaled, -self.clip, self.clip))
 
 
 def _pad_vectors(vectors: List[np.ndarray], size: int) -> np.ndarray:
@@ -41,13 +59,15 @@ class Trainer:
         self.planner_observation_size = max(len(vector) for vector in planner_vectors)
         self.worker_observation_size = max(len(vector) for vector in worker_vectors)
         self.planner = ActorCritic(
-            self.planner_observation_size, (3,), config.hidden_size
+            self.planner_observation_size, self.worlds.planner_dims, config.hidden_size
         ).to(self.device)
         self.worker = ActorCritic(
             self.worker_observation_size, (self.worlds.worker_action_size,), config.hidden_size
         ).to(self.device)
-        self.planner_optimizer = torch.optim.Adam(self.planner.parameters(), lr=config.learning_rate)
+        self.planner_optimizer = torch.optim.Adam(self.planner.parameters(), lr=config.planner_learning_rate)
         self.worker_optimizer = torch.optim.Adam(self.worker.parameters(), lr=config.learning_rate)
+        self.worker_normalizer = RunningRewardNormalizer()
+        self.planner_normalizer = RunningRewardNormalizer()
         self.history = HistoryWriter(config.output_dir)
         self.dump = DataDump(config.output_dir)
         self.global_step = 0
@@ -65,12 +85,26 @@ class Trainer:
             raise FileNotFoundError(f"Checkpoint not found at: {checkpoint_path}")
         checkpoint = torch.load(path, map_location=self.device)
         if "planner" in checkpoint:
-            self.planner.load_state_dict(checkpoint["planner"])
+            try:
+                self.planner.load_state_dict(checkpoint["planner"])
+            except Exception as e:
+                print(f"Skipping planner checkpoint load due to architecture change: {e}")
         if "worker" in checkpoint:
-            self.worker.load_state_dict(checkpoint["worker"])
+            try:
+                worker_state = dict(checkpoint["worker"])
+                cur_state = self.worker.state_dict()
+                if "encoder.0.weight" in worker_state and cur_state["encoder.0.weight"].shape != worker_state["encoder.0.weight"].shape:
+                    old_w = worker_state["encoder.0.weight"]
+                    new_w = cur_state["encoder.0.weight"].clone()
+                    min_cols = min(old_w.shape[1], new_w.shape[1])
+                    new_w[:, :min_cols] = old_w[:, :min_cols]
+                    worker_state["encoder.0.weight"] = new_w
+                self.worker.load_state_dict(worker_state, strict=False)
+            except Exception as e:
+                print(f"Skipping worker checkpoint load: {e}")
         self.planner_optimizer = torch.optim.Adam(self.planner.parameters(), lr=self.config.learning_rate)
         self.worker_optimizer = torch.optim.Adam(self.worker.parameters(), lr=self.config.learning_rate)
-        print(f"Loaded checkpoint weights from {checkpoint_path} with lr={self.config.learning_rate}", flush=True)
+        print(f"Loaded checkpoint weights with lr={self.config.learning_rate}", flush=True)
 
     def _planner_input(self, world_id: int) -> torch.Tensor:
         vector = self._raw_planner_vector(world_id)
@@ -84,8 +118,13 @@ class Trainer:
         return torch.as_tensor(_pad_vectors(vectors, self.worker_observation_size), device=self.device)
 
     def _raw_planner_vector(self, world_id: int) -> np.ndarray:
-        base = agent_observation(self.worlds.observations(world_id), self.worlds.planner_id)
-        return np.concatenate((base, self.worlds.policy_features(world_id)))
+        world = self.worlds.worlds[world_id]
+        return compute_planner_macro_features(
+            world.environment,
+            self.worlds.policy_features(world_id),
+            world.timestep,
+            self.config.episode_length,
+        )
 
     def _raw_worker_vector(self, world_id: int, agent_id: str) -> np.ndarray:
         base = agent_observation(self.worlds.observations(world_id), agent_id)
@@ -175,12 +214,14 @@ class Trainer:
                         next_worker_input, deterministic=True
                     )[2].cpu().numpy()
                 for index, agent_id in enumerate(self.worlds.worker_ids):
+                    raw_rew = worker_rewards[index]
+                    norm_rew = self.worker_normalizer.normalize(raw_rew) if self.config.normalize_rewards else raw_rew
                     worker_buffer.add(
                         observation=worker_input[index].cpu().numpy(),
                         action=worker_action[index].cpu().numpy(),
                         log_probability=float(worker_log_probability[index].item()),
                         value=float(worker_value[index].item()),
-                        reward=worker_rewards[index],
+                        reward=norm_rew,
                         done=done,
                         next_value=0.0 if done else float(next_worker_values[index]),
                     )
@@ -189,18 +230,17 @@ class Trainer:
                 pending["duration"] += 1
                 close_interval = done or self.worlds.needs_planner_action(world_id)
                 if close_interval:
-                    next_planner = np.concatenate((
-                        agent_observation(next_observations, self.worlds.planner_id),
-                        self.worlds.policy_features(world_id),
-                    ))
+                    next_planner = self._raw_planner_vector(world_id)
                     next_padded = _pad_vectors([next_planner], self.planner_observation_size)[0]
                     next_value = 0.0 if done else float(self.planner.sample(_pad_tensor(next_padded, self.device), deterministic=True)[2].item())
+                    p_raw_rew = pending["reward"]
+                    p_norm_rew = self.planner_normalizer.normalize(p_raw_rew) if self.config.normalize_rewards else p_raw_rew
                     planner_buffer.add(
                         observation=pending["observation"],
                         action=pending["action"],
                         log_probability=pending["log_probability"],
                         value=pending["value"],
-                        reward=pending["reward"],
+                        reward=p_norm_rew,
                         done=done,
                         next_value=next_value,
                     )
@@ -220,14 +260,6 @@ class Trainer:
                         "done": done,
                         "planner_action": json.dumps([int(value) for value in pending["action"]]),
                     })
-                    """
-                    print(
-                        "planner_cycle "
-                        "world=%d episode=%d timestep=%d policy=%s duration=%d reward=%.4f"
-                        % (world_id, episode_id, timestep, list(pending["action"]), pending["duration"], pending["reward"]),
-                        flush=True,
-                    )
-                    """
                     self.pending_planner[world_id] = None
                 if done:
                     self.dump.episode({
@@ -248,8 +280,10 @@ class Trainer:
     def train(self) -> None:
         for update_index in range(self.config.updates):
             buffers = self.collect_rollout()
-            worker_metrics = update_policy(self.worker, self.worker_optimizer, buffers["worker"], self.config.gamma, self.config.gae_lambda, self.config.clip_epsilon, self.config.value_coefficient, self.config.entropy_coefficient, self.config.ppo_epochs, self.config.minibatch_size, self.device)
-            planner_metrics = update_policy(self.planner, self.planner_optimizer, buffers["planner"], self.config.gamma, self.config.gae_lambda, self.config.clip_epsilon, self.config.value_coefficient, self.config.entropy_coefficient, self.config.ppo_epochs, self.config.minibatch_size, self.device)
+            worker_entropy_coeff = getattr(self.config, "worker_entropy_coefficient", self.config.entropy_coefficient)
+            planner_entropy_coeff = getattr(self.config, "planner_entropy_coefficient", self.config.entropy_coefficient)
+            worker_metrics = update_policy(self.worker, self.worker_optimizer, buffers["worker"], self.config.gamma, self.config.gae_lambda, self.config.clip_epsilon, self.config.value_coefficient, worker_entropy_coeff, self.config.ppo_epochs, self.config.minibatch_size, self.device)
+            planner_metrics = update_policy(self.planner, self.planner_optimizer, buffers["planner"], self.config.gamma, self.config.gae_lambda, self.config.clip_epsilon, self.config.value_coefficient, planner_entropy_coeff, self.config.ppo_epochs, self.config.minibatch_size, self.device)
             record = {"type": "update", "update": update_index, "global_step": self.global_step, "worker": worker_metrics, "planner": planner_metrics}
             self.history.write(record)
             self.dump.update({
