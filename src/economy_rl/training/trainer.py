@@ -64,31 +64,39 @@ class Trainer:
         self.planner_observation_size = max(len(vector) for vector in planner_vectors)
         self.worker_observation_size = max(len(vector) for vector in worker_vectors)
 
-        # 3 Competing Democratic Leader Models
-        self.leaders: List[ActorCritic] = [
-            ActorCritic(
+        if self.config.is_voting_mode:
+            # 3 Competing Democratic Leader Models
+            self.leaders: List[ActorCritic] = [
+                ActorCritic(
+                    self.planner_observation_size, self.worlds.planner_dims, config.hidden_size
+                ).to(self.device)
+                for _ in range(config.n_leaders)
+            ]
+            self.planner = self.leaders[0]
+            self.leader_optimizers = [
+                torch.optim.Adam(leader.parameters(), lr=config.planner_learning_rate)
+                for leader in self.leaders
+            ]
+            self.planner_optimizer = self.leader_optimizers[0]
+            self.leader_normalizers = [RunningRewardNormalizer() for _ in range(config.n_leaders)]
+            self.planner_normalizer = self.leader_normalizers[0]
+        else:
+            # Single Social Planner Model (Normal Simulation)
+            self.planner = ActorCritic(
                 self.planner_observation_size, self.worlds.planner_dims, config.hidden_size
             ).to(self.device)
-            for _ in range(config.n_leaders)
-        ]
-        # Backward compatibility alias
-        self.planner = self.leaders[0]
+            self.leaders = [self.planner]
+            self.planner_optimizer = torch.optim.Adam(self.planner.parameters(), lr=config.planner_learning_rate)
+            self.leader_optimizers = [self.planner_optimizer]
+            self.planner_normalizer = RunningRewardNormalizer()
+            self.leader_normalizers = [self.planner_normalizer]
 
         # Worker Model
         self.worker = ActorCritic(
             self.worker_observation_size, (self.worlds.worker_action_size,), config.hidden_size
         ).to(self.device)
-
-        self.leader_optimizers = [
-            torch.optim.Adam(leader.parameters(), lr=config.planner_learning_rate)
-            for leader in self.leaders
-        ]
-        self.planner_optimizer = self.leader_optimizers[0]
         self.worker_optimizer = torch.optim.Adam(self.worker.parameters(), lr=config.learning_rate)
-
         self.worker_normalizer = RunningRewardNormalizer()
-        self.leader_normalizers = [RunningRewardNormalizer() for _ in range(config.n_leaders)]
-        self.planner_normalizer = self.leader_normalizers[0]
 
         self.history = HistoryWriter(config.output_dir)
         self.dump = DataDump(config.output_dir)
@@ -98,6 +106,15 @@ class Trainer:
         self.episode_planner_rewards = [0.0] * config.n_worlds
         self.episode_worker_rewards = [0.0] * config.n_worlds
         self.episode_lengths = [0] * config.n_worlds
+        self.episode_agent_cumulative_rewards: List[Dict[str, float]] = [
+            {a_id: 0.0 for a_id in self.worlds.worker_ids}
+            for _ in range(self.config.n_worlds)
+        ]
+        self.previous_agent_labor: List[Dict[str, float]] = [
+            {a_id: 0.0 for a_id in self.worlds.worker_ids}
+            for _ in range(self.config.n_worlds)
+        ]
+        self._saved_checkpoints: List[Path] = []
 
         if self.config.checkpoint_path:
             self.load_checkpoint(self.config.checkpoint_path)
@@ -160,6 +177,7 @@ class Trainer:
             torch.optim.Adam(leader.parameters(), lr=self.config.planner_learning_rate)
             for leader in self.leaders
         ]
+        self.planner_optimizer = self.leader_optimizers[0]
         print(f"Loaded checkpoint weights with worker lr={self.config.learning_rate}, planner lr={self.config.planner_learning_rate}", flush=True)
 
     def _planner_input(self, world_id: int) -> torch.Tensor:
@@ -254,37 +272,60 @@ class Trainer:
                     "planner_action": json.dumps([int(value) for value in planner_action_for_step]),
                 })
 
-                # Log democratic election if held
-                if step_info.get("election_held") and step_info.get("election_result"):
-                    res = step_info["election_result"]
-                    self.dump.election({
-                        "global_step": self.global_step,
-                        "world": world_id,
-                        "episode": episode_id,
-                        "timestep": timestep,
-                        "incumbent_id": current_leader_id,
-                        "winner_id": res.winner_id,
-                        "incumbent_reelected": res.incumbent_reelected,
-                        "margin_of_victory": res.margin_of_victory,
-                        "vote_counts": json.dumps(res.vote_counts),
-                        "vote_shares": json.dumps([float(s) for s in res.vote_shares]),
-                        "cluster_vote_shares": json.dumps(res.cluster_vote_shares.tolist()) if res.cluster_vote_shares is not None else "[]",
-                    })
+                # Capture per-agent actions, efforts, resources, rewards, and loyalties
+                agent_records = step_info.get("agent_records", [])
+                for i, rec in enumerate(agent_records):
+                    a_id = rec["agent_id"]
+                    rec["global_step"] = self.global_step
+                    rec["world"] = world_id
+                    rec["episode"] = episode_id
+                    rec["timestep"] = timestep
+                    rec["action"] = int(worker_action_values[i]) if i < len(worker_action_values) else 0
+                    rew = float(worker_rewards[i]) if i < len(worker_rewards) else 0.0
+                    rec["step_reward"] = rew
+                    self.episode_agent_cumulative_rewards[world_id][a_id] += rew
+                    rec["cumulative_reward"] = self.episode_agent_cumulative_rewards[world_id][a_id]
 
-                # Log loyalty state
-                if "mean_leader_loyalty" in step_info:
-                    loyalties = step_info["mean_leader_loyalty"]
-                    self.dump.loyalty({
-                        "global_step": self.global_step,
-                        "world": world_id,
-                        "episode": episode_id,
-                        "timestep": timestep,
-                        "incumbent_id": current_leader_id,
-                        "leader_0_loyalty": loyalties[0] if len(loyalties) > 0 else 0.0,
-                        "leader_1_loyalty": loyalties[1] if len(loyalties) > 1 else 0.0,
-                        "leader_2_loyalty": loyalties[2] if len(loyalties) > 2 else 0.0,
-                        "cluster_proportions": json.dumps(step_info.get("cluster_proportions", [])),
-                    })
+                    prev_lab = self.previous_agent_labor[world_id].get(a_id, 0.0)
+                    rec["step_labor"] = max(0.0, rec["labor"] - prev_lab)
+                    self.previous_agent_labor[world_id][a_id] = rec["labor"]
+
+                if self.config.log_agent_metrics:
+                    if timestep % self.config.agent_log_interval == 0 or done:
+                        self.dump.agent_steps(agent_records)
+
+                if self.config.is_voting_mode:
+                    # Log democratic election if held
+                    if step_info.get("election_held") and step_info.get("election_result"):
+                        res = step_info["election_result"]
+                        self.dump.election({
+                            "global_step": self.global_step,
+                            "world": world_id,
+                            "episode": episode_id,
+                            "timestep": timestep,
+                            "incumbent_id": current_leader_id,
+                            "winner_id": res.winner_id,
+                            "incumbent_reelected": res.incumbent_reelected,
+                            "margin_of_victory": res.margin_of_victory,
+                            "vote_counts": json.dumps(res.vote_counts),
+                            "vote_shares": json.dumps([float(s) for s in res.vote_shares]),
+                            "cluster_vote_shares": json.dumps(res.cluster_vote_shares.tolist()) if res.cluster_vote_shares is not None else "[]",
+                        })
+
+                    # Log loyalty state
+                    if "mean_leader_loyalty" in step_info:
+                        loyalties = step_info["mean_leader_loyalty"]
+                        self.dump.loyalty({
+                            "global_step": self.global_step,
+                            "world": world_id,
+                            "episode": episode_id,
+                            "timestep": timestep,
+                            "incumbent_id": current_leader_id,
+                            "leader_0_loyalty": loyalties[0] if len(loyalties) > 0 else 0.0,
+                            "leader_1_loyalty": loyalties[1] if len(loyalties) > 1 else 0.0,
+                            "leader_2_loyalty": loyalties[2] if len(loyalties) > 2 else 0.0,
+                            "cluster_proportions": json.dumps(step_info.get("cluster_proportions", [])),
+                        })
 
                 # Add worker transitions
                 next_worker_vectors = [
@@ -338,14 +379,16 @@ class Trainer:
                             done=done,
                             next_value=next_value,
                         )
-                        self.history.write({
+                        hist_rec = {
                             "type": "planner_interval",
                             "world": world_id,
-                            "leader_id": l_id,
                             "duration": pending["duration"],
                             "reward": pending["reward"],
                             "done": done,
-                        })
+                        }
+                        if self.config.is_voting_mode:
+                            hist_rec["leader_id"] = l_id
+                        self.history.write(hist_rec)
                         self.dump.planner_interval({
                             "global_step": self.global_step,
                             "world": world_id,
@@ -358,6 +401,8 @@ class Trainer:
                         self.pending_planner[world_id] = None
 
                 if done:
+                    if self.config.log_agent_metrics:
+                        self.dump.agent_episodes(agent_records)
                     self.dump.episode({
                         "global_step": self.global_step,
                         "world": world_id,
@@ -370,6 +415,8 @@ class Trainer:
                     self.episode_planner_rewards[world_id] = 0.0
                     self.episode_worker_rewards[world_id] = 0.0
                     self.episode_lengths[world_id] = 0
+                    self.episode_agent_cumulative_rewards[world_id] = {a_id: 0.0 for a_id in self.worlds.worker_ids}
+                    self.previous_agent_labor[world_id] = {a_id: 0.0 for a_id in self.worlds.worker_ids}
                 self.global_step += 1
 
         return {"worker": worker_buffer, "leaders": leader_buffers}
@@ -388,30 +435,51 @@ class Trainer:
                 self.config.ppo_epochs, self.config.minibatch_size, self.device,
             )
 
-            # 2. Update Democratic Leader Policies
-            leader_metrics_list = []
-            for k in range(self.config.n_leaders):
-                l_buf = buffers["leaders"][k]
-                if len(l_buf) > 0:
-                    l_metrics = update_policy(
-                        self.leaders[k], self.leader_optimizers[k], l_buf,
+            # 2. Update Democratic Leader Policies / Social Planner Policy
+            if self.config.is_voting_mode:
+                leader_metrics_list = []
+                for k in range(self.config.n_leaders):
+                    l_buf = buffers["leaders"][k]
+                    if len(l_buf) > 0:
+                        l_metrics = update_policy(
+                            self.leaders[k], self.leader_optimizers[k], l_buf,
+                            self.config.gamma, self.config.gae_lambda, self.config.clip_epsilon,
+                            self.config.value_coefficient, planner_entropy_coeff,
+                            self.config.ppo_epochs, self.config.minibatch_size, self.device,
+                        )
+                    else:
+                        l_metrics = {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
+                    leader_metrics_list.append(l_metrics)
+
+                primary_planner_metrics = leader_metrics_list[0]
+                record = {
+                    "type": "update",
+                    "update": update_index,
+                    "global_step": self.global_step,
+                    "worker": worker_metrics,
+                    "planner": primary_planner_metrics,
+                    "leaders": leader_metrics_list,
+                }
+            else:
+                p_buf = buffers["leaders"][0]
+                if len(p_buf) > 0:
+                    planner_metrics = update_policy(
+                        self.planner, self.planner_optimizer, p_buf,
                         self.config.gamma, self.config.gae_lambda, self.config.clip_epsilon,
                         self.config.value_coefficient, planner_entropy_coeff,
                         self.config.ppo_epochs, self.config.minibatch_size, self.device,
                     )
                 else:
-                    l_metrics = {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
-                leader_metrics_list.append(l_metrics)
+                    planner_metrics = {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
+                primary_planner_metrics = planner_metrics
+                record = {
+                    "type": "update",
+                    "update": update_index,
+                    "global_step": self.global_step,
+                    "worker": worker_metrics,
+                    "planner": planner_metrics,
+                }
 
-            primary_planner_metrics = leader_metrics_list[0]
-            record = {
-                "type": "update",
-                "update": update_index,
-                "global_step": self.global_step,
-                "worker": worker_metrics,
-                "planner": primary_planner_metrics,
-                "leaders": leader_metrics_list,
-            }
             self.history.write(record)
             self.dump.update({
                 "update": update_index,
@@ -425,24 +493,49 @@ class Trainer:
                 "planner_value_loss": primary_planner_metrics["value_loss"],
                 "planner_entropy": primary_planner_metrics["entropy"],
             })
-            if update_index % 10 == 0:
-                self.save_checkpoint(update_index)
+
+            # Checkpoint saving controlled by json config
+            if self.config.save_weights and self.config.checkpoint_interval > 0:
+                if update_index % self.config.checkpoint_interval == 0:
+                    self.save_checkpoint(update_index)
             print(record)
 
         self.worlds.close()
-        self.dump.write_summary({
+
+        # Save final weights if configured
+        if self.config.save_weights and self.config.save_final_weights:
+            if self.config.checkpoint_interval <= 0 or (self.config.updates - 1) % self.config.checkpoint_interval != 0:
+                self.save_checkpoint(self.config.updates, is_final=True)
+
+        summary_data = {
+            "mode": "voting" if self.config.is_voting_mode else "normal",
+            "distribution": "uniform" if self.config.is_uniform_distribution else "non_uniform",
             "world_size": self.config.world_size,
             "n_agents": self.config.n_agents,
             "n_worlds": self.config.n_worlds,
-            "n_leaders": self.config.n_leaders,
-            "election_interval": self.config.election_interval,
             "planner_interval": self.config.planner_interval,
             "global_steps": self.global_step,
             "updates": self.config.updates,
+            "save_weights": self.config.save_weights,
+            "checkpoint_interval": self.config.checkpoint_interval,
+            "keep_last_n_checkpoints": self.config.keep_last_n_checkpoints,
+            "delete_old_checkpoints": self.config.delete_old_checkpoints,
+            "delete_checkpoints_after_training": self.config.delete_checkpoints_after_training,
+            "log_agent_metrics": self.config.log_agent_metrics,
+            "agent_log_interval": self.config.agent_log_interval,
             "data_directory": str(Path(self.config.output_dir) / "data"),
-        })
+        }
+        if self.config.is_voting_mode:
+            summary_data["n_leaders"] = self.config.n_leaders
+            summary_data["election_interval"] = self.config.election_interval
+
+        self.dump.write_summary(summary_data)
         self.dump.close()
         self._write_post_training_report()
+
+        # Delete all checkpoints after training if requested in json config
+        if self.config.delete_checkpoints_after_training:
+            self.delete_all_checkpoints()
 
     def _write_post_training_report(self) -> None:
         from economy_rl.analysis.analyze import analyze
@@ -456,15 +549,63 @@ class Trainer:
         print("fit_status=%s" % report.get("fit_status", "unknown"), flush=True)
         print("fit_explanation=%s" % report.get("fit_explanation", "not available"), flush=True)
 
-    def save_checkpoint(self, update_index: int) -> None:
-        destination = Path(self.config.output_dir) / "checkpoints" / ("update_%06d.pt" % update_index)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({
+    def save_checkpoint(self, update_index: int, is_final: bool = False) -> Optional[Path]:
+        if not self.config.save_weights:
+            return None
+        destination_dir = Path(self.config.output_dir) / "checkpoints"
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        filename = "final.pt" if is_final else ("update_%06d.pt" % update_index)
+        destination = destination_dir / filename
+        payload = {
             "config": self.config.to_dict(),
-            "leaders": [l.state_dict() for l in self.leaders],
             "worker": self.worker.state_dict(),
-            "leader_optimizers": [opt.state_dict() for opt in self.leader_optimizers],
             "worker_optimizer": self.worker_optimizer.state_dict(),
             "update": update_index,
             "global_step": self.global_step,
-        }, destination)
+            "mode": "voting" if self.config.is_voting_mode else "normal",
+        }
+        if self.config.is_voting_mode:
+            payload["leaders"] = [l.state_dict() for l in self.leaders]
+            payload["leader_optimizers"] = [opt.state_dict() for opt in self.leader_optimizers]
+            payload["planner"] = self.leaders[0].state_dict()
+            payload["planner_optimizer"] = self.leader_optimizers[0].state_dict()
+        else:
+            payload["planner"] = self.planner.state_dict()
+            payload["planner_optimizer"] = self.planner_optimizer.state_dict()
+            payload["leaders"] = [self.planner.state_dict()]
+            payload["leader_optimizers"] = [self.planner_optimizer.state_dict()]
+
+        torch.save(payload, destination)
+        print(f"Saved checkpoint: {destination}", flush=True)
+
+        if not is_final:
+            self._manage_checkpoint_retention()
+        return destination
+
+    def _manage_checkpoint_retention(self) -> None:
+        keep_n = self.config.keep_last_n_checkpoints
+        if self.config.delete_old_checkpoints and keep_n is None:
+            keep_n = 1
+        if keep_n is not None and keep_n >= 0:
+            checkpoint_dir = Path(self.config.output_dir) / "checkpoints"
+            if not checkpoint_dir.exists():
+                return
+            ckpts = sorted(checkpoint_dir.glob("update_*.pt"))
+            if len(ckpts) > keep_n:
+                to_delete = ckpts[:-keep_n] if keep_n > 0 else ckpts
+                for old_file in to_delete:
+                    try:
+                        old_file.unlink()
+                        print(f"Deleted old checkpoint: {old_file}", flush=True)
+                    except OSError as e:
+                        print(f"Warning: could not delete old checkpoint {old_file}: {e}")
+
+    def delete_all_checkpoints(self) -> None:
+        checkpoint_dir = Path(self.config.output_dir) / "checkpoints"
+        if checkpoint_dir.exists():
+            for pt_file in list(checkpoint_dir.glob("*.pt")):
+                try:
+                    pt_file.unlink()
+                    print(f"Deleted checkpoint: {pt_file}", flush=True)
+                except OSError as e:
+                    print(f"Warning: could not delete checkpoint {pt_file}: {e}")

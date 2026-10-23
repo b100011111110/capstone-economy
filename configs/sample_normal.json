@@ -1,0 +1,21 @@
+{
+  "scenario_name": "uniform/simple_wood_and_stone",
+  "mode": "normal",
+  "components": ["Gather", "Build"],
+  "world_size": [25, 25],
+  "n_agents": 50,
+  "n_worlds": 2,
+  "episode_length": 300,
+  "planner_interval": 10,
+  "rollout_steps": 20,
+  "updates": 2,
+  "learning_rate": 0.005,
+  "planner_learning_rate": 0.0005,
+  "save_weights": true,
+  "checkpoint_interval": 1,
+  "keep_last_n_checkpoints": 1,
+  "save_final_weights": true,
+  "output_dir": "outputs/sample_normal",
+  "checkpoint_path": null
+}
+

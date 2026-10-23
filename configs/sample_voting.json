@@ -1,0 +1,21 @@
+{
+  "scenario_name": "uniform/simple_wood_and_stone",
+  "mode": "voting",
+  "components": ["Gather", "Build"],
+  "world_size": [25, 25],
+  "n_agents": 50,
+  "n_worlds": 2,
+  "episode_length": 300,
+  "planner_interval": 10,
+  "election_interval": 20,
+  "n_leaders": 3,
+  "n_clusters": 3,
+  "rollout_steps": 20,
+  "updates": 2,
+  "learning_rate": 0.005,
+  "planner_learning_rate": 0.0005,
+  "save_weights": false,
+  "output_dir": "outputs/sample_voting_nosave",
+  "checkpoint_path": null
+}
+

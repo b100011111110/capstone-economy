@@ -77,6 +77,7 @@ def compute_planner_macro_features(
     current_leader_id: int = 0,
     n_leaders: int = 3,
     n_clusters: int = 3,
+    include_politics: bool = True,
 ) -> np.ndarray:
     """Extract 4 Gaussian parametric curves + Gini + Dynamic Clustering + Voter Loyalty."""
     worker_agents = [a for a in environment.all_agents if not a.multi_action_mode]
@@ -111,6 +112,14 @@ def compute_planner_macro_features(
     mean_labor = float(np.mean(labor)) / 100.0
     progress = float(timestep) / float(max(episode_length, 1))
 
+    base_features = (
+        gaussian_features
+        + [gini, poverty_rate, mean_coins, mean_wood, mean_stone, mean_labor, progress]
+        + list(policy_features)
+    )
+    if not include_politics:
+        return np.asarray(base_features, dtype=np.float32)
+
     # Political Economy Features:
     # 1. Cluster population shares
     if cluster_proportions is None:
@@ -134,9 +143,7 @@ def compute_planner_macro_features(
     incumbent_one_hot = [1.0 if i == current_leader_id else 0.0 for i in range(n_leaders)]
 
     macro_features = (
-        gaussian_features
-        + [gini, poverty_rate, mean_coins, mean_wood, mean_stone, mean_labor, progress]
-        + list(policy_features)
+        base_features
         + cluster_props
         + cluster_loyalties
         + leader_approvals

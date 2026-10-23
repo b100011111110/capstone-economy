@@ -1,4 +1,8 @@
-docker exec capstone-economy-cuda bash -c "
-source ~/.env/bin/activate
-python -m economy_rl.training.train --config configs/scenario_500k_8w.json
-"
+# Run simulation with native CUDA GPU support:
+docker run --gpus all --rm -v "$PWD":/workspace capstone-economy-cuda python3.8 -m economy_rl.training.train --config configs/sample_non_uniform.json
+
+# Run unit tests with CUDA GPU:
+docker run --gpus all --rm -v "$PWD":/workspace capstone-economy-cuda pytest -v tests/
+
+# Interactive bash shell with CUDA:
+docker run --gpus all -it --rm -v "$PWD":/workspace capstone-economy-cuda bash

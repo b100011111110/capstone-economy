@@ -1,10 +1,12 @@
 from dataclasses import dataclass, field
+import json
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from economy_rl.config import Config
 from economy_rl.envs.adapter import compute_planner_macro_features, inspect_agents
+from economy_rl.envs.distribution import apply_environment_distribution
 from economy_rl.envs.factory import make_environment
 from economy_rl.politics.clustering import WorkerClusterer
 from economy_rl.politics.elections import ElectionEngine, ElectionResult
@@ -46,39 +48,52 @@ class ParallelWorlds:
         self.worlds: List[WorldState] = []
         for world_id in range(config.n_worlds):
             environment = make_environment(config, config.seed + world_id + 1)
-            observations = environment.reset()
+            environment.reset()
+            observations = apply_environment_distribution(
+                environment=environment,
+                config=config,
+                seed=config.seed + world_id + 1,
+            )
             self.worlds.append(WorldState(environment, observations))
         self.planner_id, self.worker_ids, _, self.worker_action_size = inspect_agents(
             self.worlds[0].environment
         )
         self.planner_dims = PLANNER_ACTION_DIMS
-        self.election_engine = ElectionEngine(
-            n_leaders=config.n_leaders,
-            temperature=config.voting_temperature,
-            seed=config.seed,
-        )
-
-        n_workers = len(self.worker_ids)
-        for world in self.worlds:
-            world.loyalty_tracker = LoyaltyTracker(
-                n_workers=n_workers,
+        if self.config.is_voting_mode:
+            self.election_engine = ElectionEngine(
                 n_leaders=config.n_leaders,
-                eta=config.loyalty_eta,
-                decay=config.loyalty_decay,
-                sensitivity=config.loyalty_sensitivity,
+                temperature=config.voting_temperature,
+                seed=config.seed,
             )
-            world.clusterer = WorkerClusterer(
-                n_clusters=config.n_clusters,
-                feature_dim=8,
-                seed=config.seed + world_id,
-            )
-            world.cluster_assignments = np.zeros(n_workers, dtype=np.int32)
-            world.cluster_proportions = np.ones(config.n_clusters, dtype=np.float32) / config.n_clusters
-            world.cluster_centroids = np.zeros((config.n_clusters, 8), dtype=np.float32)
+
+            n_workers = len(self.worker_ids)
+            for world_id, world in enumerate(self.worlds):
+                world.loyalty_tracker = LoyaltyTracker(
+                    n_workers=n_workers,
+                    n_leaders=config.n_leaders,
+                    eta=config.loyalty_eta,
+                    decay=config.loyalty_decay,
+                    sensitivity=config.loyalty_sensitivity,
+                )
+                world.clusterer = WorkerClusterer(
+                    n_clusters=config.n_clusters,
+                    feature_dim=8,
+                    seed=config.seed + world_id,
+                )
+                world.cluster_assignments = np.zeros(n_workers, dtype=np.int32)
+                world.cluster_proportions = np.ones(config.n_clusters, dtype=np.float32) / config.n_clusters
+                world.cluster_centroids = np.zeros((config.n_clusters, 8), dtype=np.float32)
+        else:
+            self.election_engine = None
 
     def reset_world(self, world_id: int) -> Dict[str, Any]:
         world = self.worlds[world_id]
-        world.observations = world.environment.reset()
+        world.environment.reset()
+        world.observations = apply_environment_distribution(
+            environment=world.environment,
+            config=self.config,
+            seed=self.config.seed + (world.episode_id + 1) * 100 + world_id + 1,
+        )
         world.timestep = 0
         world.episode_id += 1
         world.planner_action = (0, 0, 0, 0, 0)
@@ -166,6 +181,62 @@ class ParallelWorlds:
         else:
             social_welfare = (productivity * (1.0 + gini)) + 0.05 * treasury
 
+        # Extract per-agent snapshot (resources, effort, loyalties)
+        workers = [a for a in world.environment.all_agents if not getattr(a, "multi_action_mode", False)]
+        loyalty_matrix = world.loyalty_tracker.get_loyalty_matrix() if (self.config.is_voting_mode and world.loyalty_tracker is not None) else None
+
+        agent_records = []
+        for i, agent in enumerate(workers):
+            a_id = str(agent.idx)
+            inv = getattr(agent, "inventory", {})
+            coin = float(inv.get("Coin", 0.0))
+            wood = float(inv.get("Wood", 0.0))
+            stone = float(inv.get("Stone", 0.0))
+
+            endogenous = getattr(agent, "state", {}).get("endogenous", {})
+            labor = float(endogenous.get("Labor", 0.0))
+            houses = float(getattr(agent, "houses_built", 0.0) or endogenous.get("Houses", 0.0))
+
+            effort_mult = float(agent.state.get("effort_multiplier", 1.0))
+            efficiency = float(agent.state.get("efficiency", 0.0))
+
+            if loyalty_matrix is not None and i < len(loyalty_matrix):
+                agent_loyalties = [float(v) for v in loyalty_matrix[i]]
+                pref_vote = int(np.argmax(agent_loyalties))
+            else:
+                agent_loyalties = [0.0] * self.config.n_leaders
+                pref_vote = 0
+
+            agent_records.append({
+                "agent_id": a_id,
+                "coin": coin,
+                "wood": wood,
+                "stone": stone,
+                "houses": houses,
+                "labor": labor,
+                "effort_multiplier": effort_mult,
+                "efficiency": efficiency,
+                "loyalty_leader_0": agent_loyalties[0] if len(agent_loyalties) > 0 else 0.0,
+                "loyalty_leader_1": agent_loyalties[1] if len(agent_loyalties) > 1 else 0.0,
+                "loyalty_leader_2": agent_loyalties[2] if len(agent_loyalties) > 2 else 0.0,
+                "loyalties": json.dumps(agent_loyalties),
+                "preferred_vote": pref_vote,
+            })
+
+        if not self.config.is_voting_mode:
+            rewards[self.planner_id] = float(social_welfare)
+            step_info = {
+                "social_welfare": float(social_welfare),
+                "productivity": productivity,
+                "gini": gini,
+                "treasury": treasury,
+                "current_leader_id": 0,
+                "election_held": False,
+                "election_result": None,
+                "agent_records": agent_records,
+            }
+            return rewards, step_info
+
         # 1. Update Dynamic Loyalty Tracker [-1.0, 1.0]
         delta_u = world.loyalty_tracker.update(
             incumbent_id=world.current_leader_id,
@@ -224,6 +295,7 @@ class ParallelWorlds:
             "cluster_proportions": proportions.tolist(),
             "election_held": election_held,
             "election_result": election_result,
+            "agent_records": agent_records,
         }
         return rewards, step_info
 
@@ -247,6 +319,8 @@ class ParallelWorlds:
         return self.worlds[world_id].planner_action
 
     def current_leader_id(self, world_id: int) -> int:
+        if not self.config.is_voting_mode:
+            return 0
         return self.worlds[world_id].current_leader_id
 
     def policy_features(self, world_id: int) -> np.ndarray:
@@ -263,6 +337,14 @@ class ParallelWorlds:
     def get_planner_observation(self, world_id: int) -> np.ndarray:
         world = self.worlds[world_id]
         pol_features = self.policy_features(world_id)
+        if not self.config.is_voting_mode:
+            return compute_planner_macro_features(
+                environment=world.environment,
+                policy_features=pol_features,
+                timestep=world.timestep,
+                episode_length=self.config.episode_length,
+                include_politics=False,
+            )
         cluster_loyalties = world.loyalty_tracker.get_cluster_loyalty(
             cluster_assignments=world.cluster_assignments,
             n_clusters=self.config.n_clusters,
@@ -279,6 +361,7 @@ class ParallelWorlds:
             current_leader_id=world.current_leader_id,
             n_leaders=self.config.n_leaders,
             n_clusters=self.config.n_clusters,
+            include_politics=True,
         )
 
     def close(self) -> None:
