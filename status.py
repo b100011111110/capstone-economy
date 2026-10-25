@@ -11,6 +11,12 @@ from pathlib import Path
 
 def get_active_dir() -> Path:
     candidates = [
+        Path("outputs/experiment9_voting_non_uniform_fungible"),
+        Path("outputs/experiment10_normal_non_uniform_fungible"),
+        Path("outputs/experiment7_voting_uniform_fungible"),
+        Path("outputs/experiment8_normal_uniform_fungible"),
+        Path("outputs/experiment6_voting_uniform_shaped"),
+        Path("outputs/experiment5_normal_uniform_shaped"),
         Path("outputs/experiment4_voting_non_uniform"),
         Path("outputs/experiment3_voting_uniform"),
         Path("outputs/experiment2_normal_non_uniform"),
@@ -106,6 +112,8 @@ def main():
         p = latest.get("planner", {})
         print("-" * 65)
         print(f"Latest Update {latest.get('update')} (Global Step {curr_steps}):")
+        if "steps_per_second" in latest:
+            print(f"  Throughput:        {latest.get('steps_per_second', 0.0):.1f} steps/s ({latest.get('elapsed_seconds', 0.0):.2f}s per update)")
         print(f"  Worker Entropy:    {w.get('entropy', 0.0):.4f} nats")
         print(f"  Worker Total Loss: {w.get('loss', 0.0):.4f}")
         print(f"  Planner Entropy:   {p.get('entropy', 0.0):.4f} nats")

@@ -99,7 +99,7 @@ class DataDump:
     def update(self, record: Dict[str, Any]) -> None:
         self._write(
             "updates.csv",
-            ("update", "global_step", "worker_loss", "worker_policy_loss", "worker_value_loss", "worker_entropy", "planner_loss", "planner_policy_loss", "planner_value_loss", "planner_entropy"),
+            ("update", "global_step", "worker_loss", "worker_policy_loss", "worker_value_loss", "worker_entropy", "planner_loss", "planner_policy_loss", "planner_value_loss", "planner_entropy", "steps_per_second", "elapsed_seconds"),
             record,
         )
 

@@ -286,9 +286,19 @@ def main():
         "Simulation 4: Democratic Voting + Worker Disparity",
         Path("outputs/experiment4_voting_non_uniform/analysis")
     )
+    res7 = analyze_and_plot(
+        "outputs/experiment7_voting_uniform_fungible",
+        "Simulation 7: Democratic Voting + Fungible Resources (+40/+5)",
+        Path("outputs/experiment7_voting_uniform_fungible/analysis")
+    )
+    res9 = analyze_and_plot(
+        "outputs/experiment9_voting_non_uniform_fungible",
+        "Simulation 9: Democratic Voting + Non-Uniform + Fungible Resources (+40/+5)",
+        Path("outputs/experiment9_voting_non_uniform_fungible/analysis")
+    )
     
     with open("outputs/pca_comparison_summary.json", "w") as f:
-        json.dump({"Sim3_Uniform": res3, "Sim4_Disparity": res4}, f, indent=2)
+        json.dump({"Sim3_Uniform": res3, "Sim4_Disparity": res4, "Sim7_Fungible": res7, "Sim9_NonUniform_Fungible": res9}, f, indent=2)
     print("\nAll PCA plots and centroid summaries successfully generated!")
 
 

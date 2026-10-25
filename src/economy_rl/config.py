@@ -63,6 +63,12 @@ class Config:
     capture_agent_data: bool = None
     agent_log_interval: int = 1
 
+    # Task Rewards & Incentive Shaping
+    build_payment: float = 10.0
+    resource_pickup_reward: float = 0.0
+    fungible_build_resources: bool = False
+    build_resource_cost: int = 2
+
     # Political Economy & Dynamic Clustering Parameters
     n_leaders: int = 3
     election_interval: int = 100

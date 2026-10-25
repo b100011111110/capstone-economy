@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import json
+import time
 
 import numpy as np
 import torch
@@ -423,6 +424,8 @@ class Trainer:
 
     def train(self) -> None:
         for update_index in range(self.config.updates):
+            t_update_start = time.time()
+            prev_global_step = self.global_step
             buffers = self.collect_rollout()
             worker_entropy_coeff = getattr(self.config, "worker_entropy_coefficient", self.config.entropy_coefficient)
             planner_entropy_coeff = getattr(self.config, "planner_entropy_coefficient", self.config.entropy_coefficient)
@@ -452,6 +455,9 @@ class Trainer:
                     leader_metrics_list.append(l_metrics)
 
                 primary_planner_metrics = leader_metrics_list[0]
+                elapsed_sec = max(time.time() - t_update_start, 1e-4)
+                step_delta = self.global_step - prev_global_step
+                sps = float(step_delta) / elapsed_sec
                 record = {
                     "type": "update",
                     "update": update_index,
@@ -459,6 +465,8 @@ class Trainer:
                     "worker": worker_metrics,
                     "planner": primary_planner_metrics,
                     "leaders": leader_metrics_list,
+                    "steps_per_second": round(sps, 2),
+                    "elapsed_seconds": round(elapsed_sec, 3),
                 }
             else:
                 p_buf = buffers["leaders"][0]
@@ -472,12 +480,17 @@ class Trainer:
                 else:
                     planner_metrics = {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
                 primary_planner_metrics = planner_metrics
+                elapsed_sec = max(time.time() - t_update_start, 1e-4)
+                step_delta = self.global_step - prev_global_step
+                sps = float(step_delta) / elapsed_sec
                 record = {
                     "type": "update",
                     "update": update_index,
                     "global_step": self.global_step,
                     "worker": worker_metrics,
                     "planner": planner_metrics,
+                    "steps_per_second": round(sps, 2),
+                    "elapsed_seconds": round(elapsed_sec, 3),
                 }
 
             self.history.write(record)
@@ -492,6 +505,8 @@ class Trainer:
                 "planner_policy_loss": primary_planner_metrics["policy_loss"],
                 "planner_value_loss": primary_planner_metrics["value_loss"],
                 "planner_entropy": primary_planner_metrics["entropy"],
+                "steps_per_second": round(sps, 2),
+                "elapsed_seconds": round(elapsed_sec, 3),
             })
 
             # Checkpoint saving controlled by json config

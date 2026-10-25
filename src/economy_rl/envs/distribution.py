@@ -98,7 +98,7 @@ def apply_environment_distribution(
     build_component = next((c for c in environment.components if c.name == "Build"), None)
 
     # All tasks have the SAME base nominal reward across all agents
-    STANDARD_BUILD_PAYMENT = 10.0
+    STANDARD_BUILD_PAYMENT = float(getattr(config, "build_payment", 10.0))
     for worker in workers:
         worker.state["build_payment"] = STANDARD_BUILD_PAYMENT
         worker.state["build_skill"] = 1.0

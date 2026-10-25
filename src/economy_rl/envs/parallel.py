@@ -89,6 +89,8 @@ class ParallelWorlds:
     def reset_world(self, world_id: int) -> Dict[str, Any]:
         world = self.worlds[world_id]
         world.environment.reset()
+        for a in world.environment.all_agents:
+            a.houses_built = 0.0
         world.observations = apply_environment_distribution(
             environment=world.environment,
             config=self.config,
@@ -111,7 +113,29 @@ class ParallelWorlds:
 
     def step(self, world_id: int, actions: Dict[str, Any]):
         world = self.worlds[world_id]
+        pickup_rew = float(getattr(self.config, "resource_pickup_reward", 0.0) or 0.0)
+        pre_inv = None
+        if pickup_rew > 0.0:
+            pre_inv = {
+                str(a.idx): (float(a.inventory.get("Wood", 0.0)), float(a.inventory.get("Stone", 0.0)))
+                for a in world.environment.all_agents
+                if not getattr(a, "multi_action_mode", False)
+            }
+
         observations, raw_rewards, done, info = world.environment.step(actions)
+        if pre_inv is not None and pickup_rew > 0.0:
+            raw_rewards = dict(raw_rewards)
+            for a in world.environment.all_agents:
+                if getattr(a, "multi_action_mode", False):
+                    continue
+                a_id = str(a.idx)
+                prev_w, prev_s = pre_inv.get(a_id, (0.0, 0.0))
+                curr_w = float(a.inventory.get("Wood", 0.0))
+                curr_s = float(a.inventory.get("Stone", 0.0))
+                delta_gathered = max(0.0, curr_w - prev_w) + max(0.0, curr_s - prev_s)
+                if delta_gathered > 0:
+                    raw_rewards[a_id] = float(raw_rewards.get(a_id, 0.0)) + pickup_rew * delta_gathered
+
         world.observations = observations
         world.timestep += 1
         episode_done = self._episode_done(done)
