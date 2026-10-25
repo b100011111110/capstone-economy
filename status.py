@@ -11,6 +11,7 @@ from pathlib import Path
 
 def get_active_dir() -> Path:
     candidates = [
+        Path("outputs/experiment11_voting_anti_crash"),
         Path("outputs/experiment9_voting_non_uniform_fungible"),
         Path("outputs/experiment10_normal_non_uniform_fungible"),
         Path("outputs/experiment7_voting_uniform_fungible"),

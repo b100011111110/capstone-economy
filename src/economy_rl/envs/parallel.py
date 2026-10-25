@@ -38,6 +38,9 @@ class WorldState:
     recent_taxes: Dict[str, float] = field(default_factory=dict)
     recent_transfer: float = 0.0
     last_election_result: Optional[ElectionResult] = None
+    recent_interval_houses: float = 0.0
+    recent_episode_houses: float = 0.0
+    step_houses_built: float = 0.0
 
 
 class ParallelWorlds:
@@ -106,6 +109,9 @@ class ParallelWorlds:
         world.recent_taxes = {}
         world.recent_transfer = 0.0
         world.last_election_result = None
+        world.recent_interval_houses = 0.0
+        world.recent_episode_houses = 0.0
+        world.step_houses_built = 0.0
         return world.observations
 
     def observations(self, world_id: int) -> Dict[str, Any]:
@@ -121,8 +127,24 @@ class ParallelWorlds:
                 for a in world.environment.all_agents
                 if not getattr(a, "multi_action_mode", False)
             }
+        pre_houses = {
+            str(a.idx): float(getattr(a, "houses_built", 0.0))
+            for a in world.environment.all_agents
+            if not getattr(a, "multi_action_mode", False)
+        }
 
         observations, raw_rewards, done, info = world.environment.step(actions)
+
+        # Track step houses constructed across all workers
+        step_houses = sum(
+            max(0.0, float(getattr(a, "houses_built", 0.0)) - pre_houses.get(str(a.idx), 0.0))
+            for a in world.environment.all_agents
+            if not getattr(a, "multi_action_mode", False)
+        )
+        world.step_houses_built = float(step_houses)
+        world.recent_interval_houses += float(step_houses)
+        world.recent_episode_houses += float(step_houses)
+
         if pre_inv is not None and pickup_rew > 0.0:
             raw_rewards = dict(raw_rewards)
             for a in world.environment.all_agents:
@@ -164,8 +186,11 @@ class ParallelWorlds:
             raw_val = float(raw_rewards.get(agent_id, 0.0))
             income = max(0.0, raw_val)
 
-            # House built subsidy (negative tax = reward boost for constructing houses)
-            house_sub = -house_tax if raw_val > 5.0 else 0.0
+            # House built subsidy / capital investment tax credit to protect productive builders
+            credit = 0.0
+            if getattr(self.config, "anti_crash_voting", False) and raw_val >= 30.0:
+                credit = float(getattr(self.config, "construction_tax_credit", 0.35)) * income
+            house_sub = (-house_tax if raw_val > 5.0 else 0.0) + credit
 
             # Material resource gathering tax
             inv_resources = float(agent.inventory.get("Wood", 0) + agent.inventory.get("Stone", 0))
@@ -175,7 +200,7 @@ class ParallelWorlds:
             labor_val = float(agent.state.get("endogenous", {}).get("Labor", 0.0))
             labor_cost = labor_tax * max(0.0, labor_val) * 0.01
 
-            tax_amount = (tax_rate * income) + mat_cost + labor_cost - house_sub
+            tax_amount = max(0.0, (tax_rate * income) + mat_cost + labor_cost - house_sub)
             net_taxes[agent_id] = tax_amount
 
         world.recent_taxes = net_taxes
@@ -184,10 +209,24 @@ class ParallelWorlds:
         transfer = redist_pool / max(len(self.worker_ids), 1)
         world.recent_transfer = transfer
 
+        # Macroeconomic state: detect housing collapse / zero construction recession
+        is_recession = False
+        if getattr(self.config, "anti_crash_voting", False):
+            if world.timestep >= self.config.planner_interval and world.recent_interval_houses == 0.0:
+                is_recession = True
+
+        public_dividend = 0.0
+        recession_drag = 0.0
+        if getattr(self.config, "anti_crash_voting", False):
+            if world.step_houses_built > 0:
+                public_dividend = (world.step_houses_built * float(getattr(self.config, "housing_dividend_per_house", 20.0))) / max(len(self.worker_ids), 1)
+            if is_recession:
+                recession_drag = float(getattr(self.config, "recession_slump_penalty", 0.5))
+
         rewards = dict(raw_rewards)
         for agent_id in self.worker_ids:
             raw_val = float(raw_rewards.get(agent_id, 0.0))
-            rewards[agent_id] = raw_val - net_taxes.get(agent_id, 0.0) + transfer
+            rewards[agent_id] = raw_val - net_taxes.get(agent_id, 0.0) + transfer + public_dividend - recession_drag
 
         worker_values = np.asarray([rewards[agent_id] for agent_id in self.worker_ids], dtype=np.float32)
         productivity = float(worker_values.sum())
@@ -204,6 +243,10 @@ class ParallelWorlds:
             social_welfare = (productivity * (1.0 - gini)) + 0.05 * treasury
         else:
             social_welfare = (productivity * (1.0 + gini)) + 0.05 * treasury
+
+        # Leader fiscal accountability: penalize the leader heavily for economic stagnation / zero construction
+        if getattr(self.config, "anti_crash_voting", False) and is_recession:
+            social_welfare -= float(getattr(self.config, "planner_recession_penalty", 25.0))
 
         # Extract per-agent snapshot (resources, effort, loyalties)
         workers = [a for a in world.environment.all_agents if not getattr(a, "multi_action_mode", False)]
@@ -261,10 +304,15 @@ class ParallelWorlds:
             }
             return rewards, step_info
 
-        # 1. Update Dynamic Loyalty Tracker [-1.0, 1.0]
+        # 1. Update Dynamic Loyalty Tracker [-1.0, 1.0] with Sociotropic Macroeconomic Feedback
+        growth_metric = float(world.recent_interval_houses) / max(1.0, float(self.config.planner_interval) * 0.2)
         delta_u = world.loyalty_tracker.update(
             incumbent_id=world.current_leader_id,
             worker_rewards=worker_values,
+            economic_growth=growth_metric if getattr(self.config, "anti_crash_voting", False) else 0.0,
+            recession=is_recession,
+            recession_penalty=float(getattr(self.config, "recession_loyalty_penalty", 0.25)),
+            growth_bonus=float(getattr(self.config, "growth_loyalty_bonus", 0.15)),
         )
         mean_loyalties = world.loyalty_tracker.get_mean_leader_loyalty()
 
@@ -338,6 +386,7 @@ class ParallelWorlds:
             raise ValueError(f"planner action must have 5 dimensions with values 0, 1, or 2, got: {action_tuple}")
         self.worlds[world_id].planner_action = action_tuple
         self.worlds[world_id].policy_index = action_tuple[0]
+        self.worlds[world_id].recent_interval_houses = 0.0
 
     def planner_action(self, world_id: int) -> Tuple[int, ...]:
         return self.worlds[world_id].planner_action

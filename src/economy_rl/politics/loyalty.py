@@ -42,12 +42,20 @@ class LoyaltyTracker:
         self,
         incumbent_id: int,
         worker_rewards: np.ndarray,
+        economic_growth: float = 0.0,
+        recession: bool = False,
+        recession_penalty: float = 0.25,
+        growth_bonus: float = 0.15,
     ) -> np.ndarray:
-        """Update worker loyalties based on experienced reward delta under incumbent.
+        """Update worker loyalties based on experienced reward delta and macroeconomic health under incumbent.
         
         Args:
             incumbent_id: Index of the currently governing leader (0 to n_leaders - 1).
             worker_rewards: Array of shape (n_workers,) containing current step post-tax rewards.
+            economic_growth: Normalized measure of recent capital formation / house building [0.0, 1.0].
+            recession: Boolean indicating whether the economy is in an economic freeze / zero construction.
+            recession_penalty: Penalty subtracted from incumbent loyalty during a recession.
+            growth_bonus: Approval bonus added to incumbent loyalty for positive economic growth.
             
         Returns:
             delta_utilities: Array of shape (n_workers,) representing life improvement deltas.
@@ -64,6 +72,15 @@ class LoyaltyTracker:
         # delta_u > 0 => loyalty increases towards +1.0
         # delta_u < 0 => loyalty decreases towards -1.0
         incumbent_shift = self.eta * np.tanh(self.sensitivity * delta_u)
+
+        # Sociotropic Macroeconomic Accountability:
+        # Voters penalize the governing leader when the economy crashes (0 houses)
+        # and reward the leader when the economy is actively building and growing.
+        if recession:
+            incumbent_shift -= float(recession_penalty)
+        elif economic_growth > 0.0:
+            incumbent_shift += float(growth_bonus) * min(1.0, float(economic_growth))
+
         self.loyalty_matrix[:, incumbent_id] = np.clip(
             self.loyalty_matrix[:, incumbent_id] + incumbent_shift,
             -1.0,

@@ -80,6 +80,15 @@ class Config:
     approval_reward_coeff: float = 0.5
     vote_reward_coeff: float = 0.5
 
+    # Anti-Crash & Sociotropic Macroeconomic Accountability Parameters
+    anti_crash_voting: bool = True
+    recession_loyalty_penalty: float = 0.25
+    growth_loyalty_bonus: float = 0.15
+    housing_dividend_per_house: float = 20.0
+    recession_slump_penalty: float = 0.5
+    planner_recession_penalty: float = 25.0
+    construction_tax_credit: float = 0.35
+
     @property
     def is_voting_mode(self) -> bool:
         if self.enable_voting is not None:
